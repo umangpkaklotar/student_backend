@@ -1,6 +1,6 @@
 # Backend — Student Attendance & Fee Management System
 
-FastAPI + Motor (async MongoDB) REST API for managing Karate and Skating students, daily attendance, monthly fees, and role-based dashboards.
+FastAPI + Motor (async MongoDB) REST API supporting student self-registration with Gmail SMTP OTP verification, JWT authentication, password reset with OTP, read-only student attendance/fee portals, and admin-protected backend APIs.
 
 ## Setup
 
@@ -14,20 +14,10 @@ FastAPI + Motor (async MongoDB) REST API for managing Karate and Skating student
    pip install -r requirements.txt
    ```
 3. Configure `.env` from `.env.example`:
-   ```env
-   MONGODB_URL=your_mongodb_connection_string
-   DATABASE_NAME=Management_System
-   JWT_SECRET_KEY=your_long_random_secret_key
-   JWT_ALGORITHM=HS256
-   ACCESS_TOKEN_EXPIRE_MINUTES=60
-   FRONTEND_URL=http://localhost:5173
-   ```
-4. Create the first Admin account:
-   ```powershell
-   python -m app.utils.create_admin
-   ```
-5. Run the API server:
+   - Set `MONGODB_URL`, `DATABASE_NAME`, and `JWT_SECRET_KEY`.
+   - Set `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USERNAME`, `SMTP_PASSWORD` (use a **Gmail App Password**, never your normal Gmail account password), and `SMTP_FROM_EMAIL`.
+4. Run the API server:
    ```powershell
    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    ```
-6. Open Swagger docs at `http://localhost:8000/docs`.
+5. Swagger UI: `http://localhost:8000/docs`.

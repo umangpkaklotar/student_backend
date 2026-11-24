@@ -1,5 +1,6 @@
-"""Attendance management routes."""
+"""Attendance routes: read-only student endpoints and admin-only management endpoints."""
 
+import re
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
@@ -7,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pymongo.errors import DuplicateKeyError
 
 from app.core.dependencies import (
-    get_current_user,
+    get_current_student_profile,
     parse_object_id,
     require_admin,
 )
@@ -18,15 +19,129 @@ from app.schemas.attendance import AttendanceCreate, AttendanceUpdate
 from app.utils.helpers import (
     calculate_attendance_summary,
     current_month_str,
+    recent_months,
     resolve_student,
     validate_date_str,
     validate_month_str,
 )
 
-router = APIRouter(prefix="/api/attendance", tags=["Attendance"])
+router = APIRouter(tags=["Attendance"])
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+# ==========================================
+# Student Read-Only Endpoints
+# ==========================================
+
+
+@router.get("/api/student/attendance")
+async def get_my_attendance(
+    month: Optional[str] = Query(default=None, description="Month (1-12 or YYYY-MM)"),
+    year: Optional[str] = Query(default=None, description="Year (YYYY)"),
+    student: Dict[str, Any] = Depends(get_current_student_profile),
+) -> Dict[str, Any]:
+    """Return the authenticated student's own attendance records with optional month/year filter."""
+    query: Dict[str, Any] = {"student_id": student["_id"]}
+
+    if month and re.fullmatch(r"\d{4}-\d{2}", month.strip()):
+        valid_month = validate_month_str(month.strip())
+        query["date"] = {"$regex": f"^{valid_month}-"}
+    elif year or month:
+        if year and not re.fullmatch(r"\d{4}", year.strip()):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid year format. Expected YYYY.",
+            )
+        if month and not re.fullmatch(r"(0?[1-9]|1[0-2])", month.strip()):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid month value. Expected 1-12 or YYYY-MM.",
+            )
+
+        if year and month:
+            prefix = f"{year.strip()}-{int(month.strip()):02d}-"
+            query["date"] = {"$regex": f"^{prefix}"}
+        elif year:
+            query["date"] = {"$regex": f"^{year.strip()}-"}
+        elif month:
+            mm = f"{int(month.strip()):02d}"
+            query["date"] = {"$regex": f"^\\d{{4}}-{mm}-"}
+
+    docs = (
+        await attendance_collection()
+        .find(query)
+        .sort("date", -1)
+        .to_list(length=1000)
+    )
+    records = [serialize_attendance(doc, student) for doc in docs]
+    summary = calculate_attendance_summary(docs)
+
+    return {
+        "student": serialize_student(student),
+        "records": records,
+        "summary": summary,
+    }
+
+
+@router.get("/api/student/attendance/summary")
+async def get_my_attendance_summary(
+    student: Dict[str, Any] = Depends(get_current_student_profile),
+) -> Dict[str, Any]:
+    """Return attendance summary, current month stats, recent records, and 6-month trend."""
+    cur_month = current_month_str()
+    months_window = recent_months(6)
+
+    all_docs = (
+        await attendance_collection()
+        .find({"student_id": student["_id"]})
+        .sort("date", -1)
+        .to_list(length=1000)
+    )
+    cur_month_docs = [doc for doc in all_docs if doc["date"].startswith(f"{cur_month}-")]
+
+    overall_summary = calculate_attendance_summary(all_docs)
+    current_month_summary = calculate_attendance_summary(cur_month_docs)
+
+    monthly_map: Dict[str, Dict[str, int]] = {
+        m: {"present": 0, "absent": 0} for m in months_window
+    }
+    for rec in all_docs:
+        m_key = rec["date"][:7]
+        if m_key in monthly_map:
+            if rec["status"] == "present":
+                monthly_map[m_key]["present"] += 1
+            else:
+                monthly_map[m_key]["absent"] += 1
+
+    monthly_trend = []
+    for m in months_window:
+        p = monthly_map[m]["present"]
+        a = monthly_map[m]["absent"]
+        total = p + a
+        monthly_trend.append(
+            {
+                "month": m,
+                "present": p,
+                "absent": a,
+                "percentage": round((p / total) * 100, 1) if total > 0 else 0,
+            }
+        )
+
+    return {
+        "student": serialize_student(student),
+        "current_month": cur_month,
+        "overall": overall_summary,
+        "current_month_summary": current_month_summary,
+        "recent_attendance": [serialize_attendance(doc, student) for doc in all_docs[:5]],
+        "monthly_trend": monthly_trend,
+    }
+
+
+# ==========================================
+# Admin / Staff Endpoints (Protected)
+# ==========================================
+
+
+@router.post("/api/attendance", status_code=status.HTTP_201_CREATED)
 async def mark_attendance(
     payload: AttendanceCreate,
     admin_user: Dict[str, Any] = Depends(require_admin),
@@ -54,20 +169,19 @@ async def mark_attendance(
         if student["class_type"] != class_type:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Student {student['student_id']} belongs to {student['class_type']} class, not {class_type}.",
+                detail=f"Student {student['student_id']} belongs to {student['class_type']} class.",
             )
         if student["_id"] in seen_oids:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Duplicate attendance entry in request for student {student['student_id']}.",
+                detail=f"Duplicate attendance entry in request for {student['student_id']}.",
             )
         seen_oids.add(student["_id"])
         resolved_items.append((student, entry.status.lower()))
 
-    existing_cursor = attendance_collection().find(
+    existing_docs = await attendance_collection().find(
         {"student_id": {"$in": list(seen_oids)}, "date": date_str}
-    )
-    existing_docs = await existing_cursor.to_list(length=len(seen_oids))
+    ).to_list(length=len(seen_oids))
     if existing_docs:
         existing_oids = {doc["student_id"] for doc in existing_docs}
         dup_codes = [
@@ -100,96 +214,23 @@ async def mark_attendance(
         ) from exc
 
     student_map = {student["_id"]: student for student, _ in resolved_items}
-    inserted_cursor = attendance_collection().find(
+    inserted_docs = await attendance_collection().find(
         {"_id": {"$in": insert_res.inserted_ids}}
-    )
-    created_records: List[Dict[str, Any]] = []
-    async for rec in inserted_cursor:
-        created_records.append(serialize_attendance(rec, student_map.get(rec["student_id"])))
+    ).to_list(length=len(docs_to_insert))
 
     return {
-        "message": f"Attendance marked for {len(created_records)} student(s).",
-        "records": created_records,
+        "message": f"Attendance marked for {len(inserted_docs)} student(s).",
+        "records": [
+            serialize_attendance(rec, student_map.get(rec["student_id"]))
+            for rec in inserted_docs
+        ],
     }
 
 
-@router.get("/student/{student_id}")
-async def get_student_attendance(
-    student_id: str,
-    month: Optional[str] = Query(default=None, description="Filter by YYYY-MM"),
-    start_date: Optional[str] = Query(default=None, description="Start date YYYY-MM-DD"),
-    end_date: Optional[str] = Query(default=None, description="End date YYYY-MM-DD"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
-) -> Dict[str, Any]:
-    """View attendance history and summary for a student (Admin or own Student)."""
-    student = await resolve_student(student_id)
-    if current_user.get("role") != "admin" and student["user_id"] != current_user["_id"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not authorized to view another student's attendance.",
-        )
-
-    query: Dict[str, Any] = {"student_id": student["_id"]}
-    if month:
-        valid_month = validate_month_str(month)
-        query["date"] = {"$regex": f"^{valid_month}-"}
-    elif start_date or end_date:
-        date_filter: Dict[str, Any] = {}
-        if start_date:
-            date_filter["$gte"] = validate_date_str(start_date)
-        if end_date:
-            date_filter["$lte"] = validate_date_str(end_date)
-        query["date"] = date_filter
-
-    cursor = attendance_collection().find(query).sort("date", -1)
-    docs = await cursor.to_list(length=1000)
-    records = [serialize_attendance(doc, student) for doc in docs]
-    summary = calculate_attendance_summary(docs)
-
-    return {
-        "student": serialize_student(student),
-        "records": records,
-        "summary": summary,
-    }
-
-
-@router.get("/monthly/{student_id}")
-async def get_student_monthly_attendance(
-    student_id: str,
-    month: Optional[str] = Query(default=None, description="Month in YYYY-MM format"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
-) -> Dict[str, Any]:
-    """Get monthly attendance statistics and records for a student (Admin or own Student)."""
-    student = await resolve_student(student_id)
-    if current_user.get("role") != "admin" and student["user_id"] != current_user["_id"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not authorized to view another student's attendance.",
-        )
-
-    target_month = validate_month_str(month) if month else current_month_str()
-    cursor = attendance_collection().find(
-        {
-            "student_id": student["_id"],
-            "date": {"$regex": f"^{target_month}-"},
-        }
-    ).sort("date", -1)
-    docs = await cursor.to_list(length=100)
-    records = [serialize_attendance(doc, student) for doc in docs]
-    summary = calculate_attendance_summary(docs)
-
-    return {
-        "student": serialize_student(student),
-        "month": target_month,
-        "records": records,
-        **summary,
-    }
-
-
-@router.get("/date/{date}")
+@router.get("/api/attendance/date/{date}")
 async def get_attendance_by_date(
     date: str,
-    class_type: Optional[str] = Query(default=None, description="Filter by karate or skating"),
+    class_type: Optional[str] = Query(default=None),
     _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """Get all attendance records for a specific date (Admin only)."""
@@ -198,28 +239,21 @@ async def get_attendance_by_date(
     if class_type and class_type.lower() in {"karate", "skating"}:
         query["class_type"] = class_type.lower()
 
-    cursor = attendance_collection().find(query)
-    docs = await cursor.to_list(length=1000)
-
+    docs = await attendance_collection().find(query).to_list(length=1000)
     student_oids = list({doc["student_id"] for doc in docs})
     student_map: Dict[ObjectId, Dict[str, Any]] = {}
     if student_oids:
-        s_cursor = students_collection().find({"_id": {"$in": student_oids}})
-        async for s_doc in s_cursor:
+        async for s_doc in students_collection().find({"_id": {"$in": student_oids}}):
             student_map[s_doc["_id"]] = s_doc
-
-    records = [serialize_attendance(doc, student_map.get(doc["student_id"])) for doc in docs]
-    summary = calculate_attendance_summary(docs)
 
     return {
         "date": valid_date,
-        "class_type": class_type.lower() if class_type else None,
-        "records": records,
-        "summary": summary,
+        "records": [serialize_attendance(doc, student_map.get(doc["student_id"])) for doc in docs],
+        "summary": calculate_attendance_summary(docs),
     }
 
 
-@router.put("/{attendance_id}")
+@router.put("/api/attendance/{attendance_id}")
 async def update_attendance(
     attendance_id: str,
     payload: AttendanceUpdate,

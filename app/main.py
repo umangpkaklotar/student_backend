@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.database.connection import close_mongo_connection, connect_to_mongo
-from app.routes import attendance, auth, dashboard, fees, students
+from app.routes import attendance, auth, dashboard, fees, profile, students
 
 
 @asynccontextmanager
@@ -24,8 +24,11 @@ settings = get_settings()
 
 app = FastAPI(
     title="Student Attendance & Fee Management System API",
-    description="Production API for managing Karate & Skating students, daily attendance, and monthly fees.",
-    version="1.0.0",
+    description=(
+        "Production REST API for Student Registration with Gmail OTP Verification, "
+        "JWT Authentication, Attendance Viewing, Fee Status Viewing, and Profile Management."
+    ),
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -68,6 +71,7 @@ async def validation_exception_handler(
 
 
 app.include_router(auth.router)
+app.include_router(profile.router)
 app.include_router(students.router)
 app.include_router(attendance.router)
 app.include_router(fees.router)

@@ -11,6 +11,8 @@ def serialize_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "name": user["name"],
         "email": user["email"],
         "role": user["role"],
+        "email_verified": bool(user.get("email_verified", True)),
+        "status": user.get("status", "active"),
         "created_at": user["created_at"].isoformat()
         if isinstance(user.get("created_at"), datetime)
         else user.get("created_at"),
@@ -22,6 +24,8 @@ def build_user_document(
     email: str,
     hashed_password: str,
     role: str,
+    email_verified: bool = True,
+    status_val: str = "active",
 ) -> Dict[str, Any]:
     """Build a new user document for insertion into MongoDB."""
     return {
@@ -29,5 +33,7 @@ def build_user_document(
         "email": email.strip().lower(),
         "password": hashed_password,
         "role": role,
+        "email_verified": email_verified,
+        "status": status_val,
         "created_at": datetime.now(timezone.utc),
     }

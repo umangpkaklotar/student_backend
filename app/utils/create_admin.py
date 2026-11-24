@@ -1,4 +1,4 @@
-"""Interactive CLI script to create the first admin account safely."""
+"""Interactive CLI script to create an admin account safely."""
 
 import asyncio
 import getpass
@@ -44,6 +44,8 @@ async def create_admin_interactive() -> int:
             email=email,
             hashed_password=hash_password(password),
             role="admin",
+            email_verified=True,
+            status_val="active",
         )
         result = await users_collection().insert_one(user_doc)
         print(f"Admin account created successfully! ID: {result.inserted_id}, Email: {email}")

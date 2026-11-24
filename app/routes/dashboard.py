@@ -1,20 +1,16 @@
-"""Dashboard and reporting routes for Admin and Student roles."""
+"""Admin dashboard and reporting routes."""
 
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from app.core.dependencies import get_current_student_profile, require_admin
+from app.core.dependencies import require_admin
 from app.database.collections import (
     attendance_collection,
     fees_collection,
     students_collection,
 )
-from app.models.attendance import serialize_attendance
-from app.models.fee import serialize_fee
-from app.models.student import serialize_student
 from app.utils.helpers import (
-    build_virtual_pending_fee,
     calculate_attendance_summary,
     current_month_str,
     recent_months,
@@ -45,7 +41,6 @@ async def get_admin_dashboard(
     present_today = sum(1 for a in today_attendance if a.get("status") == "present")
     absent_today = sum(1 for a in today_attendance if a.get("status") == "absent")
 
-    # Current month fees (combine real records + virtual pending for active students)
     cur_month_fees = await fees_collection().find({"month": cur_month}).to_list(length=5000)
     cur_fee_by_student = {f["student_id"]: f for f in cur_month_fees}
 
@@ -67,7 +62,6 @@ async def get_admin_dashboard(
             pending_fees_count += 1
             pending_fees_amount += float(student["monthly_fee"])
 
-    # Monthly attendance chart (last 6 months)
     all_window_att = await attendance_collection().find(
         {"date": {"$gte": f"{months_window[0]}-01"}}
     ).to_list(length=20000)
@@ -96,7 +90,6 @@ async def get_admin_dashboard(
             }
         )
 
-    # Monthly fee collection chart (last 6 months)
     all_window_fees = await fees_collection().find(
         {"month": {"$in": months_window}}
     ).to_list(length=20000)
@@ -113,7 +106,6 @@ async def get_admin_dashboard(
             else:
                 monthly_fee_map[m_key]["pending"] += float(fee["amount"])
 
-    # Include virtual pending for current month in chart
     for student in active_students:
         if student["_id"] not in recorded_per_month[cur_month]:
             monthly_fee_map[cur_month]["pending"] += float(student["monthly_fee"])
@@ -232,8 +224,7 @@ async def get_admin_reports(
 
     for student in students:
         sid = student["_id"]
-        s_att = att_by_student[sid]
-        att_summary = calculate_attendance_summary(s_att)
+        att_summary = calculate_attendance_summary(att_by_student[sid])
         total_present += att_summary["present"]
         total_absent += att_summary["absent"]
 
@@ -279,78 +270,4 @@ async def get_admin_reports(
             "pending_fees": round(total_pending_fees, 2),
         },
         "rows": rows,
-    }
-
-
-@router.get("/student")
-async def get_student_dashboard(
-    student: Dict[str, Any] = Depends(get_current_student_profile),
-) -> Dict[str, Any]:
-    """Return personal attendance, fee status, and charts for the authenticated Student."""
-    cur_month = current_month_str()
-    months_window = recent_months(6)
-
-    all_attendance = (
-        await attendance_collection()
-        .find({"student_id": student["_id"]})
-        .sort("date", -1)
-        .to_list(length=1000)
-    )
-    month_attendance = [
-        rec for rec in all_attendance if rec["date"].startswith(f"{cur_month}-")
-    ]
-
-    cur_month_summary = calculate_attendance_summary(month_attendance)
-    overall_summary = calculate_attendance_summary(all_attendance)
-
-    # Monthly attendance chart for last 6 months
-    monthly_map: Dict[str, Dict[str, int]] = {
-        m: {"present": 0, "absent": 0} for m in months_window
-    }
-    for rec in all_attendance:
-        m_key = rec["date"][:7]
-        if m_key in monthly_map:
-            if rec["status"] == "present":
-                monthly_map[m_key]["present"] += 1
-            else:
-                monthly_map[m_key]["absent"] += 1
-
-    monthly_chart = []
-    for m in months_window:
-        p = monthly_map[m]["present"]
-        a = monthly_map[m]["absent"]
-        total = p + a
-        monthly_chart.append(
-            {
-                "month": m,
-                "present": p,
-                "absent": a,
-                "percentage": round((p / total) * 100, 1) if total > 0 else 0,
-            }
-        )
-
-    all_fees = (
-        await fees_collection()
-        .find({"student_id": student["_id"]})
-        .sort("month", -1)
-        .to_list(length=200)
-    )
-    serialized_fees = [serialize_fee(f, student) for f in all_fees]
-    current_month_fee = next((f for f in serialized_fees if f["month"] == cur_month), None)
-    if current_month_fee is None and student.get("status") == "active":
-        current_month_fee = build_virtual_pending_fee(student, cur_month)
-        serialized_fees.insert(0, current_month_fee)
-
-    return {
-        "student": serialize_student(student),
-        "current_month": cur_month,
-        "current_month_attendance": {
-            "month": cur_month,
-            **cur_month_summary,
-        },
-        "overall_attendance": overall_summary,
-        "current_month_fee": current_month_fee,
-        "recent_attendance": [serialize_attendance(r, student) for r in all_attendance[:10]],
-        "recent_payments": serialized_fees[:10],
-        "monthly_attendance_chart": monthly_chart,
     }

@@ -34,25 +34,31 @@ async def get_current_user(
         )
 
     payload = decode_access_token(credentials.credentials)
-    if payload is None or "sub" not in payload:
+    if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired authentication token.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user_id = payload["sub"]
-    if not ObjectId.is_valid(user_id):
+    user_id = payload.get("user_id") or payload.get("sub")
+    if not user_id or not ObjectId.is_valid(str(user_id)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token subject.",
         )
 
-    user = await users_collection().find_one({"_id": ObjectId(user_id)})
+    user = await users_collection().find_one({"_id": ObjectId(str(user_id))})
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account not found.",
+        )
+
+    if user.get("status") == "inactive":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is inactive.",
         )
 
     return user

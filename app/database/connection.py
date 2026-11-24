@@ -40,11 +40,16 @@ def get_database() -> AsyncIOMotorDatabase:
 
 
 async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
-    """Create required unique and query indexes on collections."""
+    """Create required unique, query, and TTL indexes on collections."""
     await db["users"].create_index([("email", ASCENDING)], unique=True)
     await db["students"].create_index([("student_id", ASCENDING)], unique=True)
     await db["students"].create_index([("email", ASCENDING)], unique=True)
     await db["students"].create_index([("user_id", ASCENDING)], unique=True)
+    await db["otp_verifications"].create_index([("email", ASCENDING)])
+    await db["otp_verifications"].create_index(
+        [("expires_at", ASCENDING)],
+        expireAfterSeconds=0,
+    )
     await db["attendance"].create_index(
         [("student_id", ASCENDING), ("date", ASCENDING)],
         unique=True,
