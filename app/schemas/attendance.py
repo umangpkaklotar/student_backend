@@ -17,13 +17,20 @@ class AttendanceEntry(BaseModel):
 class AttendanceCreate(BaseModel):
     date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     class_type: Literal["karate", "skating"]
+    mode: Literal["normal", "edit"] = "normal"
     records: Optional[List[AttendanceEntry]] = None
+    attendance: Optional[List[AttendanceEntry]] = None
     student_id: Optional[str] = None
     status: Optional[Literal["present", "absent"]] = None
 
     @field_validator("class_type", mode="before")
     @classmethod
     def normalize_class_type(cls, v: str) -> str:
+        return v.strip().lower() if isinstance(v, str) else v
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def normalize_mode(cls, v: str) -> str:
         return v.strip().lower() if isinstance(v, str) else v
 
     @field_validator("status", mode="before")
@@ -38,4 +45,15 @@ class AttendanceUpdate(BaseModel):
     @field_validator("status", mode="before")
     @classmethod
     def normalize_status(cls, v: str) -> str:
+        return v.strip().lower() if isinstance(v, str) else v
+
+
+class AttendanceBulkUpdate(BaseModel):
+    date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    class_type: Literal["karate", "skating"]
+    records: List[AttendanceEntry] = Field(..., min_length=1)
+
+    @field_validator("class_type", mode="before")
+    @classmethod
+    def normalize_class_type(cls, v: str) -> str:
         return v.strip().lower() if isinstance(v, str) else v

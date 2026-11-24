@@ -1,11 +1,11 @@
 """Attendance routes: read-only student endpoints and admin-only management endpoints."""
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pymongo.errors import DuplicateKeyError
 
 from app.core.dependencies import (
     get_current_student_profile,
@@ -13,14 +13,19 @@ from app.core.dependencies import (
     require_admin,
 )
 from app.database.collections import attendance_collection, students_collection
-from app.models.attendance import build_attendance_document, serialize_attendance
+from app.models.attendance import serialize_attendance
 from app.models.student import serialize_student
-from app.schemas.attendance import AttendanceCreate, AttendanceUpdate
+from app.schemas.attendance import (
+    AttendanceBulkUpdate,
+    AttendanceCreate,
+    AttendanceUpdate,
+)
 from app.utils.helpers import (
     calculate_attendance_summary,
     current_month_str,
     recent_months,
     resolve_student,
+    today_date_str,
     validate_date_str,
     validate_month_str,
 )
@@ -39,8 +44,17 @@ async def get_my_attendance(
     year: Optional[str] = Query(default=None, description="Year (YYYY)"),
     student: Dict[str, Any] = Depends(get_current_student_profile),
 ) -> Dict[str, Any]:
-    """Return the authenticated student's own attendance records with optional month/year filter."""
-    query: Dict[str, Any] = {"student_id": student["_id"]}
+    """Return the authenticated student's own attendance records for their enrolled class."""
+    active_class = student.get("class_type")
+    if not active_class:
+        return {
+            "student": serialize_student(student),
+            "enrolled_class": None,
+            "records": [],
+            "summary": calculate_attendance_summary([]),
+        }
+
+    query: Dict[str, Any] = {"student_id": student["_id"], "class_type": active_class}
 
     if month and re.fullmatch(r"\d{4}-\d{2}", month.strip()):
         valid_month = validate_month_str(month.strip())
@@ -89,10 +103,25 @@ async def get_my_attendance_summary(
     """Return attendance summary, current month stats, recent records, and 6-month trend."""
     cur_month = current_month_str()
     months_window = recent_months(6)
+    active_class = student.get("class_type")
+
+    if not active_class:
+        return {
+            "student": serialize_student(student),
+            "enrolled_class": None,
+            "current_month": cur_month,
+            "overall": calculate_attendance_summary([]),
+            "current_month_summary": calculate_attendance_summary([]),
+            "recent_attendance": [],
+            "monthly_trend": [
+                {"month": m, "present": 0, "absent": 0, "percentage": 0}
+                for m in months_window
+            ],
+        }
 
     all_docs = (
         await attendance_collection()
-        .find({"student_id": student["_id"]})
+        .find({"student_id": student["_id"], "class_type": active_class})
         .sort("date", -1)
         .to_list(length=1000)
     )
@@ -146,11 +175,25 @@ async def mark_attendance(
     payload: AttendanceCreate,
     admin_user: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
-    """Mark attendance for one or multiple students on a given date (Admin only)."""
+    """Save or update today's attendance in Normal Mode (Admin only)."""
     date_str = validate_date_str(payload.date)
+    server_today = today_date_str()
     class_type = payload.class_type.lower()
 
-    entries = list(payload.records or [])
+    if payload.mode == "normal":
+        if date_str != server_today:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Normal attendance can only be marked for today's date.",
+            )
+    else:
+        if date_str > server_today:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Future attendance is not allowed.",
+            )
+
+    entries = list(payload.records or payload.attendance or [])
     if payload.student_id and payload.status:
         entries.append(
             type("Entry", (), {"student_id": payload.student_id, "status": payload.status})()
@@ -179,62 +222,51 @@ async def mark_attendance(
         seen_oids.add(student["_id"])
         resolved_items.append((student, entry.status.lower()))
 
-    existing_docs = await attendance_collection().find(
-        {"student_id": {"$in": list(seen_oids)}, "date": date_str}
-    ).to_list(length=len(seen_oids))
-    if existing_docs:
-        existing_oids = {doc["student_id"] for doc in existing_docs}
-        dup_codes = [
-            student["student_id"]
-            for student, _ in resolved_items
-            if student["_id"] in existing_oids
-        ]
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Duplicate attendance: already marked on {date_str} for {', '.join(dup_codes)}.",
+    now_utc = datetime.now(timezone.utc)
+    for student, status_val in resolved_items:
+        await attendance_collection().update_one(
+            {"student_id": student["_id"], "date": date_str},
+            {
+                "$set": {
+                    "class_type": class_type,
+                    "status": status_val,
+                    "marked_by": admin_user["_id"],
+                },
+                "$setOnInsert": {
+                    "created_at": now_utc,
+                },
+            },
+            upsert=True,
         )
-
-    docs_to_insert = [
-        build_attendance_document(
-            student_oid=student["_id"],
-            date_str=date_str,
-            class_type=class_type,
-            status_val=status_val,
-            marked_by=admin_user["_id"],
-        )
-        for student, status_val in resolved_items
-    ]
-
-    try:
-        insert_res = await attendance_collection().insert_many(docs_to_insert)
-    except DuplicateKeyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Duplicate attendance record for date {date_str}.",
-        ) from exc
 
     student_map = {student["_id"]: student for student, _ in resolved_items}
-    inserted_docs = await attendance_collection().find(
-        {"_id": {"$in": insert_res.inserted_ids}}
-    ).to_list(length=len(docs_to_insert))
+    saved_docs = await attendance_collection().find(
+        {"student_id": {"$in": list(seen_oids)}, "date": date_str}
+    ).to_list(length=len(seen_oids))
 
     return {
-        "message": f"Attendance marked for {len(inserted_docs)} student(s).",
+        "message": "Today's attendance saved successfully.",
+        "date": date_str,
+        "server_today": server_today,
         "records": [
             serialize_attendance(rec, student_map.get(rec["student_id"]))
-            for rec in inserted_docs
+            for rec in saved_docs
         ],
     }
 
 
-@router.get("/api/attendance/date/{date}")
-async def get_attendance_by_date(
+async def _fetch_attendance_by_date_impl(
     date: str,
-    class_type: Optional[str] = Query(default=None),
-    _: Dict[str, Any] = Depends(require_admin),
+    class_type: Optional[str],
 ) -> Dict[str, Any]:
-    """Get all attendance records for a specific date (Admin only)."""
     valid_date = validate_date_str(date)
+    server_today = today_date_str()
+    if valid_date > server_today:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Future attendance is not allowed.",
+        )
+
     query: Dict[str, Any] = {"date": valid_date}
     if class_type and class_type.lower() in {"karate", "skating"}:
         query["class_type"] = class_type.lower()
@@ -248,8 +280,116 @@ async def get_attendance_by_date(
 
     return {
         "date": valid_date,
-        "records": [serialize_attendance(doc, student_map.get(doc["student_id"])) for doc in docs],
+        "server_today": server_today,
+        "class_type": class_type.lower() if class_type else None,
+        "records": [
+            serialize_attendance(doc, student_map.get(doc["student_id"])) for doc in docs
+        ],
         "summary": calculate_attendance_summary(docs),
+    }
+
+
+@router.get("/api/attendance")
+async def get_attendance_query(
+    date: Optional[str] = Query(default=None),
+    class_type: Optional[str] = Query(default=None),
+    _: Dict[str, Any] = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Get attendance records by date and class_type (Admin only)."""
+    target_date = date or today_date_str()
+    return await _fetch_attendance_by_date_impl(target_date, class_type)
+
+
+@router.get("/api/attendance/date/{date}")
+async def get_attendance_by_date(
+    date: str,
+    class_type: Optional[str] = Query(default=None),
+    _: Dict[str, Any] = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Get all attendance records for a specific date (Admin only)."""
+    return await _fetch_attendance_by_date_impl(date, class_type)
+
+
+@router.put("/api/attendance")
+async def bulk_update_attendance(
+    payload: AttendanceBulkUpdate,
+    admin_user: Dict[str, Any] = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Update existing attendance records for a specific past or today date (Edit Mode, Admin only)."""
+    date_str = validate_date_str(payload.date)
+    server_today = today_date_str()
+    if date_str > server_today:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Future attendance is not allowed.",
+        )
+
+    class_type = payload.class_type.lower()
+    resolved_items: List[tuple[Dict[str, Any], str]] = []
+    seen_oids: set[ObjectId] = set()
+    for entry in payload.records:
+        student = await resolve_student(entry.student_id)
+        if student["class_type"] != class_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Student {student['student_id']} belongs to {student['class_type']} class.",
+            )
+        if student["_id"] in seen_oids:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Duplicate attendance entry in request for {student['student_id']}.",
+            )
+        seen_oids.add(student["_id"])
+        resolved_items.append((student, entry.status.lower()))
+
+    existing_docs = await attendance_collection().find(
+        {
+            "student_id": {"$in": list(seen_oids)},
+            "date": date_str,
+            "class_type": class_type,
+        }
+    ).to_list(length=len(seen_oids))
+
+    if not existing_docs:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No attendance record found for this date.",
+        )
+
+    existing_oids = {doc["student_id"] for doc in existing_docs}
+    updated_oids: List[ObjectId] = []
+    for student, status_val in resolved_items:
+        if student["_id"] not in existing_oids:
+            continue
+        await attendance_collection().update_one(
+            {
+                "student_id": student["_id"],
+                "date": date_str,
+                "class_type": class_type,
+            },
+            {"$set": {"status": status_val, "marked_by": admin_user["_id"]}},
+        )
+        updated_oids.append(student["_id"])
+
+    if not updated_oids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No attendance record found for this date.",
+        )
+
+    student_map = {student["_id"]: student for student, _ in resolved_items}
+    updated_docs = await attendance_collection().find(
+        {"student_id": {"$in": updated_oids}, "date": date_str}
+    ).to_list(length=len(updated_oids))
+
+    return {
+        "message": "Attendance updated successfully.",
+        "date": date_str,
+        "server_today": server_today,
+        "records": [
+            serialize_attendance(doc, student_map.get(doc["student_id"]))
+            for doc in updated_docs
+        ],
     }
 
 
@@ -266,6 +406,12 @@ async def update_attendance(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Attendance record not found.",
+        )
+
+    if existing.get("date", "") > today_date_str():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Future attendance is not allowed.",
         )
 
     await attendance_collection().update_one(

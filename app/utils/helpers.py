@@ -1,7 +1,7 @@
 """Shared helper functions for ID generation, dates, and calculations."""
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from bson import ObjectId
@@ -9,15 +9,22 @@ from fastapi import HTTPException, status
 
 from app.database.collections import students_collection
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def now_ist() -> datetime:
+    """Return current datetime in Indian Standard Time (UTC+05:30)."""
+    return datetime.now(IST)
+
 
 def current_month_str() -> str:
-    """Return current month formatted as YYYY-MM."""
-    return datetime.now().strftime("%Y-%m")
+    """Return current month in IST formatted as YYYY-MM."""
+    return now_ist().strftime("%Y-%m")
 
 
 def today_date_str() -> str:
-    """Return today's date formatted as YYYY-MM-DD."""
-    return datetime.now().strftime("%Y-%m-%d")
+    """Return today's date in IST formatted as YYYY-MM-DD."""
+    return now_ist().strftime("%Y-%m-%d")
 
 
 def validate_date_str(date_str: str) -> str:
@@ -56,7 +63,7 @@ def validate_month_str(month_str: str) -> str:
 
 def recent_months(count: int = 6) -> List[str]:
     """Return the last `count` months in chronological order as YYYY-MM."""
-    now = datetime.now()
+    now = now_ist()
     year = now.year
     month = now.month
     months: List[str] = []

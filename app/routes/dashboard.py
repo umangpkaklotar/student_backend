@@ -50,6 +50,8 @@ async def get_admin_dashboard(
     pending_fees_amount = 0.0
 
     for student in active_students:
+        if not student.get("class_type") or float(student.get("monthly_fee") or 0) <= 0:
+            continue
         fee_doc = cur_fee_by_student.get(student["_id"])
         if fee_doc:
             if fee_doc["status"] == "paid":
@@ -107,6 +109,8 @@ async def get_admin_dashboard(
                 monthly_fee_map[m_key]["pending"] += float(fee["amount"])
 
     for student in active_students:
+        if not student.get("class_type") or float(student.get("monthly_fee") or 0) <= 0:
+            continue
         if student["_id"] not in recorded_per_month[cur_month]:
             monthly_fee_map[cur_month]["pending"] += float(student["monthly_fee"])
 
@@ -232,7 +236,13 @@ async def get_admin_reports(
         has_cur_month = any(f["month"] == cur_month for f in s_fees)
         paid_amt = sum(float(f["amount"]) for f in s_fees if f["status"] == "paid")
         pending_amt = sum(float(f["amount"]) for f in s_fees if f["status"] != "paid")
-        if include_cur_month_virtual and student.get("status") == "active" and not has_cur_month:
+        if (
+            include_cur_month_virtual
+            and student.get("status") == "active"
+            and student.get("class_type")
+            and float(student.get("monthly_fee") or 0) > 0
+            and not has_cur_month
+        ):
             pending_amt += float(student["monthly_fee"])
 
         total_paid_fees += paid_amt

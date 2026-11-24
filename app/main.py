@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.database.connection import close_mongo_connection, connect_to_mongo
-from app.routes import attendance, auth, dashboard, fees, profile, students
+from app.routes import attendance, auth, dashboard, enrollment, fees, profile, students
 
 
 @asynccontextmanager
@@ -72,6 +72,7 @@ async def validation_exception_handler(
 
 app.include_router(auth.router)
 app.include_router(profile.router)
+app.include_router(enrollment.router)
 app.include_router(students.router)
 app.include_router(attendance.router)
 app.include_router(fees.router)

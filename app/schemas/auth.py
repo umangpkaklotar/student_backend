@@ -29,12 +29,6 @@ class RegisterSendOtpRequest(BaseModel):
     gender: Optional[Literal["Male", "Female", "Other"]] = None
     date_of_birth: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     address: Optional[str] = Field(default=None, min_length=3, max_length=300)
-    class_type: Optional[Literal["karate", "skating"]] = None
-
-    @field_validator("class_type", mode="before")
-    @classmethod
-    def normalize_class(cls, v: Optional[str]) -> Optional[str]:
-        return v.strip().lower() if isinstance(v, str) else v
 
     @field_validator("phone")
     @classmethod
@@ -54,7 +48,6 @@ class RegisterSendOtpRequest(BaseModel):
                 "gender": self.gender,
                 "date_of_birth": self.date_of_birth,
                 "address": self.address,
-                "class_type": self.class_type,
             }
             missing = [k for k, v in required.items() if not v]
             if missing:

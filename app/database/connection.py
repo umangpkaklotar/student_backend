@@ -45,6 +45,8 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["students"].create_index([("student_id", ASCENDING)], unique=True)
     await db["students"].create_index([("email", ASCENDING)], unique=True)
     await db["students"].create_index([("user_id", ASCENDING)], unique=True)
+    await db["class_enrollments"].create_index([("student_id", ASCENDING)])
+    await db["class_enrollments"].create_index([("status", ASCENDING)])
     await db["otp_verifications"].create_index([("email", ASCENDING)])
     await db["otp_verifications"].create_index(
         [("expires_at", ASCENDING)],

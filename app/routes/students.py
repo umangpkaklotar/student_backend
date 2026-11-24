@@ -9,6 +9,7 @@ from app.core.dependencies import get_current_user, require_admin
 from app.core.security import hash_password
 from app.database.collections import (
     attendance_collection,
+    class_enrollments_collection,
     fees_collection,
     students_collection,
     users_collection,
@@ -208,6 +209,7 @@ async def delete_or_deactivate_student(
     if permanent:
         await attendance_collection().delete_many({"student_id": student["_id"]})
         await fees_collection().delete_many({"student_id": student["_id"]})
+        await class_enrollments_collection().delete_many({"student_id": student["_id"]})
         await students_collection().delete_one({"_id": student["_id"]})
         await users_collection().delete_one({"_id": student["user_id"]})
         return {

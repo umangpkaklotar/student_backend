@@ -47,7 +47,8 @@ async def get_my_fees(
     fees_list = [serialize_fee(fee, student) for fee in db_fees]
 
     current_month_fee = next((f for f in fees_list if f["month"] == cur_month), None)
-    if current_month_fee is None and student.get("status") == "active":
+    has_active_class = bool(student.get("class_type")) and float(student.get("monthly_fee") or 0) > 0
+    if current_month_fee is None and student.get("status") == "active" and has_active_class:
         current_month_fee = build_virtual_pending_fee(student, cur_month)
         fees_list.insert(0, current_month_fee)
 
@@ -79,8 +80,10 @@ async def get_my_current_month_fee(
     )
     if fee_doc:
         current_fee = serialize_fee(fee_doc, student)
-    else:
+    elif student.get("class_type") and float(student.get("monthly_fee") or 0) > 0:
         current_fee = build_virtual_pending_fee(student, cur_month)
+    else:
+        current_fee = None
 
     return {
         "student": serialize_student(student),
@@ -198,6 +201,8 @@ async def list_fees(
 
     for student in students:
         if student.get("status") != "active":
+            continue
+        if not student.get("class_type") or float(student.get("monthly_fee") or 0) <= 0:
             continue
         if student["_id"] in recorded_for_virtual_month:
             continue

@@ -58,7 +58,6 @@ async def send_registration_otp(payload: RegisterSendOtpRequest) -> Dict[str, An
             "gender": payload.gender,
             "date_of_birth": payload.date_of_birth,
             "address": payload.address.strip(),
-            "class_type": payload.class_type.lower(),
         }
         await issue_otp(
             email=email,
@@ -112,7 +111,6 @@ async def verify_registration_otp_and_create_student(
             detail="An account with this email is already registered.",
         ) from exc
 
-    class_type = reg_data["class_type"].lower()
     student_payload = {
         "name": reg_data["name"],
         "email": email,
@@ -120,9 +118,9 @@ async def verify_registration_otp_and_create_student(
         "gender": reg_data["gender"],
         "date_of_birth": reg_data["date_of_birth"],
         "address": reg_data["address"],
-        "class_type": class_type,
-        "joining_date": today_date_str(),
-        "monthly_fee": DEFAULT_CLASS_FEES.get(class_type, 1000.0),
+        "class_type": None,
+        "joining_date": None,
+        "monthly_fee": 0.0,
     }
 
     created_student = None

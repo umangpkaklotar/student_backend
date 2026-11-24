@@ -17,10 +17,10 @@ def serialize_student(student: Dict[str, Any]) -> Dict[str, Any]:
         "gender": student["gender"],
         "date_of_birth": student["date_of_birth"],
         "address": student["address"],
-        "class_type": student["class_type"],
-        "joining_date": student["joining_date"],
-        "monthly_fee": float(student["monthly_fee"]),
-        "status": student["status"],
+        "class_type": student.get("class_type"),
+        "joining_date": student.get("joining_date"),
+        "monthly_fee": float(student.get("monthly_fee") or 0),
+        "status": student.get("status", "active"),
         "created_at": student["created_at"].isoformat()
         if isinstance(student.get("created_at"), datetime)
         else student.get("created_at"),
@@ -33,6 +33,10 @@ def build_student_document(
     data: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Build a new student document for insertion into MongoDB."""
+    raw_class = data.get("class_type")
+    class_type = raw_class.lower() if isinstance(raw_class, str) and raw_class.strip() else None
+    monthly_fee = float(data["monthly_fee"]) if data.get("monthly_fee") is not None else 0.0
+
     return {
         "student_id": student_id,
         "user_id": user_id,
@@ -42,9 +46,9 @@ def build_student_document(
         "gender": data["gender"].strip(),
         "date_of_birth": data["date_of_birth"],
         "address": data["address"].strip(),
-        "class_type": data["class_type"].lower(),
-        "joining_date": data["joining_date"],
-        "monthly_fee": float(data["monthly_fee"]),
+        "class_type": class_type,
+        "joining_date": data.get("joining_date"),
+        "monthly_fee": monthly_fee,
         "status": "active",
         "created_at": datetime.now(timezone.utc),
     }

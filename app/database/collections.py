@@ -12,6 +12,10 @@ def students_collection() -> AsyncIOMotorCollection:
     return get_database()["students"]
 
 
+def class_enrollments_collection() -> AsyncIOMotorCollection:
+    return get_database()["class_enrollments"]
+
+
 def otp_verifications_collection() -> AsyncIOMotorCollection:
     return get_database()["otp_verifications"]
 
