@@ -47,6 +47,9 @@ class Settings(BaseSettings):
         ]
         if "http://localhost:5173" not in origins:
             origins.append("http://localhost:5173")
+        for capacitor_origin in ("https://localhost", "capacitor://localhost"):
+            if capacitor_origin not in origins:
+                origins.append(capacitor_origin)
         return origins
 
 
