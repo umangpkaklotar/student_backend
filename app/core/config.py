@@ -39,7 +39,9 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> List[str]:
         origins = [
-            origin.strip() for origin in self.FRONTEND_URL.split(",") if origin.strip()
+            origin.strip().rstrip("/")
+            for origin in self.FRONTEND_URL.split(",")
+            if origin.strip()
         ]
         if "http://localhost:5173" not in origins:
             origins.append("http://localhost:5173")
