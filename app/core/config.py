@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     SMTP_USERNAME: str = Field(default="")
     SMTP_PASSWORD: str = Field(default="")
     SMTP_FROM_EMAIL: str = Field(default="")
+    SMTP_FROM_NAME: str = Field(default="AcademyFlow")
+    BREVO_API_KEY: str = Field(default="")
 
     OTP_EXPIRE_MINUTES: int = Field(default=5)
     OTP_MAX_ATTEMPTS: int = Field(default=5)

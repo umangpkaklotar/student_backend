@@ -1,6 +1,7 @@
 """OTP generation, hashed storage, cooldown, expiry, and verification service."""
 
 from datetime import datetime, timedelta, timezone
+import logging
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException, status
@@ -11,11 +12,21 @@ from app.database.collections import otp_verifications_collection
 from app.models.otp import build_otp_document
 from app.services.email_service import send_otp_email
 
+logger = logging.getLogger("academyflow.otp")
+
 
 def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _mask_email(email: str) -> str:
+    local, _, domain = email.partition("@")
+    if not domain:
+        return "******"
+    prefix = local[:1] if local else ""
+    return f"{prefix}*****@{domain}"
 
 
 async def issue_otp(
@@ -24,9 +35,10 @@ async def issue_otp(
     registration_data: Optional[Dict[str, Any]] = None,
     allow_reuse_registration_data: bool = False,
 ) -> None:
-    """Create and email a fresh 6-digit OTP while enforcing cooldown and invalidating old OTPs."""
+    """Create, hash, save, and email a 6-digit OTP while enforcing cooldown."""
     settings = get_settings()
     normalized_email = email.strip().lower()
+    logger.info("OTP request received for email: %s", _mask_email(normalized_email))
     now = datetime.now(timezone.utc)
 
     existing = await otp_verifications_collection().find_one(
@@ -57,11 +69,9 @@ async def issue_otp(
     otp = generate_secure_otp(6)
     otp_hash = hash_otp(otp)
     expires_at = now + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
+    logger.info("OTP generated")
 
-    # Send email before finalizing replacement, or replace record and send
-    await send_otp_email(normalized_email, otp, purpose=purpose)
-
-    # Invalidate any prior OTP for this email & purpose by deleting and inserting the fresh record
+    # Invalidate any prior OTP for this email & purpose and save hashed OTP + expiry
     await otp_verifications_collection().delete_many(
         {"email": normalized_email, "purpose": purpose}
     )
@@ -72,7 +82,15 @@ async def issue_otp(
         purpose=purpose,
         registration_data=resolved_reg_data,
     )
-    await otp_verifications_collection().insert_one(new_doc)
+    insert_res = await otp_verifications_collection().insert_one(new_doc)
+    logger.info("OTP saved")
+
+    try:
+        await send_otp_email(normalized_email, otp, purpose=purpose)
+    except Exception:
+        # Clean up unsent OTP record so user can retry without hitting resend cooldown
+        await otp_verifications_collection().delete_one({"_id": insert_res.inserted_id})
+        raise
 
 
 async def verify_otp_code(

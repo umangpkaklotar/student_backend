@@ -1,9 +1,15 @@
 """FastAPI application entry point."""
 
 from contextlib import asynccontextmanager
+import logging
 from typing import Dict
 
 from fastapi import FastAPI, HTTPException, Request
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -80,7 +86,7 @@ app.include_router(fees.router)
 app.include_router(dashboard.router)
 
 
-@app.get("/", tags=["Health"])
+@app.api_route("/", methods=["GET", "HEAD"], tags=["Health"])
 async def root() -> Dict[str, str]:
     return {
         "status": "ok",
